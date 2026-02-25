@@ -605,12 +605,15 @@ function hideLoadingScreen() {
 async function getAccessToken() {
   await msalInstance.initialize();
 
-  // Handle redirect response if present
-  await msalInstance.handleRedirectPromise();
+  // Handle the return from Microsoft login redirect
+  const redirectResult = await msalInstance.handleRedirectPromise();
+  if (redirectResult) {
+    return redirectResult.accessToken;
+  }
 
   const accounts = msalInstance.getAllAccounts();
   if (accounts.length > 0) {
-    // Silent token acquisition first
+    // Try silent acquisition first
     try {
       const result = await msalInstance.acquireTokenSilent({
         scopes: SCOPES,
@@ -618,14 +621,15 @@ async function getAccessToken() {
       });
       return result.accessToken;
     } catch (e) {
-      // Silent failed — fall through to popup
+      // Silent failed — fall through to redirect
     }
   }
 
-  // Popup login
-  setLoadingProgress(15, 'Sign in with Microsoft…', 'A login popup will appear. Sign in with your WCTV Microsoft 365 account.');
-  const result = await msalInstance.acquireTokenPopup({ scopes: SCOPES });
-  return result.accessToken;
+  // Redirect to Microsoft login page (avoids all popup issues)
+  setLoadingProgress(15, 'Redirecting to Microsoft sign-in…', 'You will be redirected to sign in with your WCTV Microsoft 365 account.');
+  await new Promise(r => setTimeout(r, 800));
+  await msalInstance.loginRedirect({ scopes: SCOPES });
+  return null; // page redirects away — execution stops here
 }
 
 // ============================================================
@@ -869,6 +873,7 @@ async function initPlanner() {
   try {
     setLoadingProgress(5, 'Initializing…', 'Setting up Microsoft authentication.');
     accessToken = await getAccessToken();
+    if (!accessToken) return; // redirecting to Microsoft login — page will reload
 
     setLoadingProgress(35, 'Finding "TO Tasks" plan…', 'Scanning your Planner plans for TO Tasks.');
     planId = await findPlan();
