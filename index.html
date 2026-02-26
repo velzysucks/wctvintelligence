@@ -757,18 +757,27 @@ async function findPlan() {
 // FETCH PLANNER DATA
 // ============================================================
 async function fetchPlannerData(pid) {
-  const [tasks, buckets, details] = await Promise.all([
+  // Fetch tasks, buckets, and plan details (contains category/label names) in parallel
+  const [tasks, buckets, planDetails] = await Promise.all([
     graphGetAll(`/planner/plans/${pid}/tasks`),
     graphGetAll(`/planner/plans/${pid}/buckets`),
-    // Task details (notes/description) — fetch individually for each task
-    // We'll do this lazily or in batch
+    graphGet(`/planner/plans/${pid}/details`),
   ]);
 
-  // Build bucket map: bucketId → bucket name (used as team member / category)
+  // Build bucket map: bucketId → bucket name
   const bucketMap = {};
   buckets.forEach(b => { bucketMap[b.id] = b.name; });
 
-  // Fetch task details for notes (do in small parallel batches)
+  // Build category/label map: "category1" → "GG", "category2" → "CS", etc.
+  // planDetails.categoryDescriptions contains the user-defined label names
+  const categoryMap = {};
+  if (planDetails.categoryDescriptions) {
+    Object.entries(planDetails.categoryDescriptions).forEach(([key, val]) => {
+      if (val) categoryMap[key] = val;
+    });
+  }
+
+  // Fetch task details for notes in parallel batches
   const BATCH = 10;
   const detailsMap = {};
   for (let i = 0; i < tasks.length; i += BATCH) {
@@ -781,18 +790,18 @@ async function fetchPlannerData(pid) {
     }));
   }
 
-  return { tasks, buckets, bucketMap, detailsMap };
+  return { tasks, buckets, bucketMap, detailsMap, categoryMap };
 }
 
 // ============================================================
 // NORMALIZE PLANNER TASKS → Our data model
 // ============================================================
 function normalizeTasks(raw) {
-  const { tasks, bucketMap, detailsMap } = raw;
+  const { tasks, bucketMap, detailsMap, categoryMap } = raw;
   const today = new Date();
 
   return tasks.map(t => {
-    const bucket = bucketMap[t.bucketId] || '';
+    const bucket = bucketMap[t.bucketId] || 'To Do';
     const detail = detailsMap[t.id] || {};
     const notes = detail.description || '';
     const checklist = detail.checklist ? Object.values(detail.checklist) : [];
@@ -803,21 +812,28 @@ function normalizeTasks(raw) {
     // Percent complete
     const pct = t.percentComplete || 0;
 
-    // Status derived from Planner
+    // Status — map Planner percentComplete to readable status
+    // Also treat "To Do" bucket tasks with 0% as Not Started
     let status = 'Not Started';
     if (pct === 100) status = 'Completed';
     else if (pct > 0) status = 'In Progress';
     else if (t.startDateTime) status = 'In Progress';
 
     // Priority mapping: Planner uses 0=urgent,1=important,3=medium,5=low,9=none
-    const priMap = { 0: 'Urgent', 1: 'High', 3: 'Medium', 5: 'Low', 9: 'Unknown' };
-    const priority = priMap[t.priority] || 'Medium';
+    const priMap = { 0: 'Urgent', 1: 'High', 3: 'Medium', 5: 'Low', 9: 'None' };
+    const priority = priMap[t.priority] !== undefined ? priMap[t.priority] : 'Medium';
 
-    // Labels (Planner categories) — used for client/hospital tagging
-    const labelKeys = t.appliedCategories ? Object.keys(t.appliedCategories).filter(k => t.appliedCategories[k]) : [];
+    // Labels — map category keys (category1, category2...) to real display names
+    // e.g. { category1: true, category3: true } → ["GG", "CS"]
+    const labels = t.appliedCategories
+      ? Object.keys(t.appliedCategories)
+          .filter(k => t.appliedCategories[k])
+          .map(k => categoryMap[k] || k)  // use real name if available, fallback to key
+      : [];
 
-    // Assignees
+    // Assignees — may be empty for unassigned tasks (that's fine, include them)
     const assignees = t.assignments ? Object.keys(t.assignments) : [];
+    const isUnassigned = assignees.length === 0;
 
     // Check if overdue
     const isOverdue = due !== 'TBD' && new Date(due) < today && status !== 'Completed';
@@ -825,17 +841,17 @@ function normalizeTasks(raw) {
     return {
       id: t.id,
       task: t.title || '(Untitled)',
-      bucket,           // bucket = team member or category
+      bucket,
       priority,
       status,
       pct,
       due,
       isOverdue,
+      isUnassigned,
       notes,
-      labels: labelKeys,
+      labels,           // array of real label names e.g. ["GG", "Escalate"]
       assignees,
       checklist,
-      // Parsed from task title / notes — try to extract hospital/client
       hospital: extractHospital(t.title, notes),
       client: extractClient(t.title, notes, bucket),
       rawTask: t,
@@ -874,41 +890,63 @@ function buildDataSummary(tasks) {
   const overdue = active.filter(t => t.isOverdue);
   const inProg = active.filter(t => t.status === 'In Progress');
   const notStarted = active.filter(t => t.status === 'Not Started');
+  const unassigned = active.filter(t => t.isUnassigned);
   const soon = active.filter(t => {
     if (t.due === 'TBD') return false;
     const d = new Date(t.due);
     return !isNaN(d) && d >= today && (d - today) / 86400000 <= 14;
   });
-  const high = active.filter(t => ['High','Urgent'].includes(t.priority));
-  const highNotStarted = high.filter(t => t.status === 'Not Started');
 
-  // Build bucket / team member breakdown
+  // Group by bucket
   const buckets = {};
   active.forEach(t => {
-    if (!t.bucket) return;
-    if (!buckets[t.bucket]) buckets[t.bucket] = [];
-    buckets[t.bucket].push(t);
+    const name = t.bucket || 'To Do';
+    if (!buckets[name]) buckets[name] = [];
+    buckets[name].push(t);
   });
 
+  // Group by label
+  const labelGroups = {};
+  active.forEach(t => {
+    (t.labels || []).forEach(lbl => {
+      if (!labelGroups[lbl]) labelGroups[lbl] = [];
+      labelGroups[lbl].push(t);
+    });
+  });
+
+  const taskLine = t =>
+    `[${t.priority}][${t.status}][Bucket: ${t.bucket || 'To Do'}]` +
+    (t.labels?.length ? `[Labels: ${t.labels.join(', ')}]` : '') +
+    (t.isUnassigned ? '[UNASSIGNED]' : '') +
+    ` ${t.task} | Due: ${t.due} | ${t.pct}% | Notes: ${t.notes.substring(0, 100)}`;
+
   const lines = [
-    `WCTV TO Tasks — Planner Live Data — As of ${new Date().toLocaleString()}`,
-    `Total tasks: ${tasks.length} | Active: ${active.length} | Completed: ${completed.length}`,
-    `Overdue: ${overdue.length} | In Progress: ${inProg.length} | Not Started: ${notStarted.length}`,
+    `WCTV TO Tasks — Live Planner Data — ${new Date().toLocaleString()}`,
+    `Total: ${tasks.length} | Active: ${active.length} | Completed: ${completed.length}`,
+    `Overdue: ${overdue.length} | In Progress: ${inProg.length} | Not Started: ${notStarted.length} | Unassigned: ${unassigned.length}`,
+    '',
+    '=== LABELS / CATEGORIES IN USE ===',
+    Object.entries(labelGroups).length
+      ? Object.entries(labelGroups).map(([lbl, items]) =>
+          `${lbl} (${items.length} tasks): ${items.map(i => i.task).slice(0, 5).join(' · ')}`
+        ).join('\n')
+      : '(no labels applied)',
     '',
     '=== OVERDUE TASKS ===',
-    ...overdue.slice(0, 15).map(t => `- [${t.priority}] ${t.task} | Bucket: ${t.bucket} | Due: ${t.due} | ${t.pct}% done | Notes: ${t.notes.substring(0,100)}`),
+    ...overdue.slice(0, 15).map(taskLine),
     '',
     '=== DUE WITHIN 14 DAYS ===',
-    ...soon.slice(0, 10).map(t => `- [${t.priority}] ${t.task} | Bucket: ${t.bucket} | Due: ${t.due} | ${t.pct}% done`),
+    ...soon.slice(0, 10).map(taskLine),
     '',
-    '=== HIGH/URGENT PRIORITY NOT STARTED ===',
-    ...highNotStarted.slice(0, 10).map(t => `- ${t.task} | Bucket: ${t.bucket} | Due: ${t.due} | Notes: ${t.notes.substring(0,100)}`),
+    '=== UNASSIGNED TASKS ===',
+    unassigned.length ? unassigned.slice(0, 10).map(taskLine).join('\n') : '(none)',
     '',
-    '=== TEAM BUCKETS & WORKLOAD ===',
-    ...Object.entries(buckets).map(([b, items]) => `${b}: ${items.length} active tasks (${items.filter(i=>['High','Urgent'].includes(i.priority)).length} high priority)`),
+    '=== BUCKETS & WORKLOAD ===',
+    ...Object.entries(buckets).map(([b, items]) =>
+      `${b}: ${items.length} active (${items.filter(i => ['High','Urgent'].includes(i.priority)).length} high/urgent)`),
     '',
-    '=== ALL ACTIVE TASKS (truncated to 60) ===',
-    ...active.slice(0, 60).map(t => `[${t.priority}][${t.status}] ${t.task} | Due: ${t.due} | ${t.pct}% | Bucket: ${t.bucket} | ${t.notes.substring(0,80)}`),
+    '=== ALL ACTIVE TASKS (up to 80) ===',
+    ...active.slice(0, 80).map(taskLine),
   ];
 
   return lines.join('\n');
