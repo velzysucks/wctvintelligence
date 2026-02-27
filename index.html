@@ -515,6 +515,7 @@ header {
       <div class="stat-mini"><span class="stat-mini-label">Overdue</span><span class="stat-mini-val val-red" id="statOverdue">—</span></div>
       <div class="stat-mini"><span class="stat-mini-label">In Progress</span><span class="stat-mini-val val-blue" id="statInProgress">—</span></div>
       <div class="stat-mini"><span class="stat-mini-label">Not Started</span><span class="stat-mini-val val-amber" id="statNotStarted">—</span></div>
+      <div class="stat-mini"><span class="stat-mini-label">Unassigned</span><span class="stat-mini-val val-amber" id="statUnassigned">—</span></div>
       <div class="stat-mini"><span class="stat-mini-label">Completed</span><span class="stat-mini-val val-green" id="statCompleted">—</span></div>
       <div class="stat-mini"><span class="stat-mini-label">Last Synced</span><span class="stat-mini-val" id="statSync" style="font-size:0.6rem;color:#6a6258">—</span></div>
     </div>
@@ -911,6 +912,7 @@ function updateStats(tasks) {
   document.getElementById('statOverdue').textContent = active.filter(t => t.isOverdue).length;
   document.getElementById('statInProgress').textContent = active.filter(t => t.status === 'In Progress').length;
   document.getElementById('statNotStarted').textContent = active.filter(t => t.status === 'Not Started').length;
+  document.getElementById('statUnassigned').textContent = active.filter(t => t.isUnassigned).length;
   document.getElementById('statCompleted').textContent = tasks.filter(t => t.status === 'Completed').length;
   lastSync = new Date();
   document.getElementById('statSync').textContent = lastSync.toLocaleTimeString();
@@ -1271,10 +1273,10 @@ function renderWorkload() {
   const el = document.getElementById('tab-workload');
   const active = LIVE_DATA.filter(t => t.status !== 'Completed');
 
-  // Group by bucket (team member)
+  // Group by bucket — ALL tasks included regardless of assignee
   const buckets = {};
   active.forEach(t => {
-    const name = t.bucket || '(Unassigned)';
+    const name = t.bucket || 'To do';
     if (!buckets[name]) buckets[name] = [];
     buckets[name].push(t);
   });
@@ -1287,24 +1289,29 @@ function renderWorkload() {
   sorted.forEach(([name, items], i) => {
     const count = items.length;
     const highCount = items.filter(d => ['High','Urgent'].includes(d.priority)).length;
+    const unassignedCount = items.filter(d => d.isUnassigned).length;
     const maxLoad = 12;
     const pct = Math.min((count / maxLoad) * 100, 100);
-    const loadColor = count >= 8 ? '#c8441a' : count >= 5 ? '#e0a060' : '#2e7d5b';
+    const loadColor = count >= 8 ? 'var(--red)' : count >= 5 ? 'var(--amber)' : 'var(--green)';
     const loadLabel = count >= 8 ? 'overloaded' : count >= 5 ? 'busy' : 'manageable';
     const loadClass = count >= 8 ? 'overloaded' : count >= 5 ? 'busy' : 'ok-load';
 
     const chips = items.slice(0, 8).map(item => {
       const cls = ['High','Urgent'].includes(item.priority) ? 'task-high' : 'task-med';
       const label = `${item.task.substring(0,35)}${item.task.length > 35 ? '…' : ''}`;
-      return `<span class="person-task-chip ${cls}">${escHtml(label)}</span>`;
+      const unassignedBadge = item.isUnassigned ? ' 👤' : '';
+      return `<span class="person-task-chip ${cls}" title="${item.isUnassigned ? 'Unassigned' : ''}">${escHtml(label)}${unassignedBadge}</span>`;
     }).join('');
     const more = count > 8 ? `<span class="person-task-chip" style="color:var(--muted)">+${count-8} more</span>` : '';
+    const unassignedNote = unassignedCount > 0
+      ? `<span style="font-size:0.62rem;color:var(--amber);font-weight:600;margin-left:6px;">· ${unassignedCount} unassigned 👤</span>`
+      : '';
 
     el.innerHTML += `<div class="person-card" style="animation-delay:${i*0.06}s">
       <div class="person-header">
         <div>
           <div class="person-name">${escHtml(name)}</div>
-          <div style="font-size:0.62rem;color:var(--muted)"><strong style="color:var(--red)">${highCount} high/urgent</strong> of ${count} active tasks</div>
+          <div style="font-size:0.62rem;color:var(--muted)"><strong style="color:var(--red)">${highCount} high/urgent</strong> of ${count} active tasks${unassignedNote}</div>
         </div>
         <span class="person-count ${loadClass}">${count} tasks · ${loadLabel}</span>
       </div>
@@ -1313,6 +1320,7 @@ function renderWorkload() {
     </div>`;
   });
 }
+
 
 // ============================================================
 // TODAY TAB — AI-generated via Claude
