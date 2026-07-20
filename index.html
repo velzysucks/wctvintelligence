@@ -683,6 +683,9 @@ async function graphGetAll(path) {
 // FIND THE "TO Tasks" PLAN
 // ============================================================
 async function findPlan() {
+  // Case-insensitive, whitespace-tolerant comparison — plan titles can render
+  // differently (e.g. all-caps styling) than their actual stored value.
+  const normalizeTitle = (s) => (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
   const debugErrors = [];
   let allTitlesSeen = [];
 
@@ -690,7 +693,7 @@ async function findPlan() {
   try {
     const plans = await graphGetAll('/me/planner/plans');
     allTitlesSeen = allTitlesSeen.concat(plans.map(p => p.title));
-    const match = plans.find(p => p.title === CONFIG.planName);
+    const match = plans.find(p => normalizeTitle(p.title) === normalizeTitle(CONFIG.planName));
     if (match) return match.id;
   } catch(e) { debugErrors.push(`/me/planner/plans: ${e.message}`); }
 
@@ -702,7 +705,7 @@ async function findPlan() {
       try {
         const plans = await graphGetAll(`/groups/${group.id}/planner/plans`);
         allTitlesSeen = allTitlesSeen.concat(plans.map(p => p.title));
-        const match = plans.find(p => p.title === CONFIG.planName);
+        const match = plans.find(p => normalizeTitle(p.title) === normalizeTitle(CONFIG.planName));
         if (match) return match.id;
       } catch(e) { /* this group may not have Planner enabled - not an error */ }
     }
