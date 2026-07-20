@@ -969,11 +969,18 @@ async function initPlanner() {
 
   } catch(err) {
     console.error('Planner init error:', err);
+    // Surface which account actually authenticated, so account-mismatch issues are visible
+    let acctInfo = '';
+    try {
+      const accts = msalInstance.getAllAccounts();
+      if (accts.length) acctInfo = ` [Signed in as: ${accts[0].username}]`;
+    } catch(e) { /* ignore */ }
+
     // User cancelled popup — show friendlier message
     if (err.errorCode === 'user_cancelled' || err.message?.includes('user_cancelled')) {
       showError('Sign-in cancelled.', 'Click Retry to sign in with your Microsoft 365 account.');
     } else {
-      showError('Could not connect to Microsoft Planner.', err.message);
+      showError('Could not connect to Microsoft Planner.', err.message + acctInfo);
     }
     document.getElementById('liveDot').className = 'live-dot error';
     document.getElementById('liveText').textContent = 'Offline';
