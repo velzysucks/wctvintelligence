@@ -1408,6 +1408,30 @@ async function renderToday() {
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
         max_tokens: 3000,
+        tools: [{
+          name: "submit_recommendations",
+          description: "Submit the prioritized list of action items for today.",
+          input_schema: {
+            type: "object",
+            properties: {
+              items: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    task: { type: "string", description: "Specific action to take today" },
+                    why: { type: "string", description: "Reason this is critical right now" },
+                    tags: { type: "array", items: { type: "string" }, description: "e.g. bucket/person, due date or urgency" },
+                    urgent: { type: "boolean" }
+                  },
+                  required: ["task", "why", "tags", "urgent"]
+                }
+              }
+            },
+            required: ["items"]
+          }
+        }],
+        tool_choice: { type: "tool", name: "submit_recommendations" },
         messages: [{
           role: "user",
           content: `Based on the live Planner deployment data below, generate the top 6-8 specific action items the WCTV team should tackle TODAY (${todayStr}).
@@ -1418,17 +1442,7 @@ For each item, provide:
 3. The bucket/team member responsible
 4. Due date if relevant
 
-Format your response as JSON array:
-[
-  {
-    "task": "specific action to take today",
-    "why": "reason this is critical right now",
-    "tags": ["bucket/person", "due date or urgency"],
-    "urgent": true or false
-  }
-]
-
-Only respond with valid JSON, no other text.
+Call the submit_recommendations tool with your list.
 
 PLANNER DATA:
 ${summary}`
@@ -1441,22 +1455,9 @@ ${summary}`
       const errMsg = data.error?.message || JSON.stringify(data).substring(0, 300);
       throw new Error(`API error (${resp.status}): ${errMsg}`);
     }
-    const raw = data.content?.[0]?.text || '[]';
-    const clean = raw.replace(/```json|```/g,'').trim();
-    let items;
-    try {
-      items = JSON.parse(clean);
-    } catch (parseErr) {
-      // Response was likely truncated mid-item. Recover by dropping the last
-      // incomplete object and closing the array, so we still show what we have.
-      const lastGoodEnd = clean.lastIndexOf('},');
-      if (lastGoodEnd > -1) {
-        try { items = JSON.parse(clean.substring(0, lastGoodEnd + 1) + ']'); }
-        catch (e2) { throw parseErr; }
-      } else {
-        throw parseErr;
-      }
-    }
+    const toolBlock = data.content?.find(b => b.type === 'tool_use');
+    if (!toolBlock) throw new Error('Model did not return structured recommendations (no tool_use block).');
+    const items = toolBlock.input.items || [];
 
     el.innerHTML = `<div class="today-title">Tackle Today</div>
 <div class="today-sub">Top recommended actions · ${todayStr} · AI-generated from live Planner data</div>`;
