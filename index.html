@@ -1144,7 +1144,11 @@ When answering about priorities, focus on: 1) overdue items, 2) items due within
   });
 
   const data = await response.json();
-  const reply = data.content?.[0]?.text || "Sorry, I couldn't process that request.";
+  if (!response.ok || data.type === 'error') {
+    const errMsg = data.error?.message || JSON.stringify(data).substring(0, 300);
+    throw new Error(`API error (${response.status}): ${errMsg}`);
+  }
+  const reply = data.content?.[0]?.text || `Sorry, I couldn't process that request. (Raw response: ${JSON.stringify(data).substring(0,300)})`;
   conversationHistory.push({ role: "assistant", content: reply });
   return reply;
 }
@@ -1173,7 +1177,7 @@ async function sendMessage() {
       document.getElementById('sendBtn').disabled = false;
       return;
     }
-    addMessage('assistant', '<strong>Error:</strong> Could not reach the Claude API. Check your connection.');
+    addMessage('assistant', `<strong>Error:</strong> ${escHtml(e.message)}`);
   }
 
   isLoading = false;
@@ -1407,6 +1411,10 @@ ${summary}`
     });
 
     const data = await resp.json();
+    if (!resp.ok || data.type === 'error') {
+      const errMsg = data.error?.message || JSON.stringify(data).substring(0, 300);
+      throw new Error(`API error (${resp.status}): ${errMsg}`);
+    }
     const raw = data.content?.[0]?.text || '[]';
     const clean = raw.replace(/```json|```/g,'').trim();
     const items = JSON.parse(clean);
@@ -1427,6 +1435,7 @@ ${summary}`
     });
 
   } catch(err) {
+    todayLoaded = false; // allow retry — don't get stuck blank
     el.innerHTML = `<div class="today-title">Tackle Today</div>
 <div style="font-size:0.78rem;color:var(--red);padding:20px;">Could not generate recommendations: ${escHtml(err.message)}</div>`;
   }
