@@ -690,8 +690,8 @@ async function findPlan() {
     if (match) return match.id;
   } catch(e) { /* fall through */ }
 
-  // Fallback: search through joined groups
-  const groups = await graphGetAll('/me/memberOf?$select=id,displayName&$top=100');
+  // Fallback: search through joined groups (transitive — includes nested group memberships)
+  const groups = await graphGetAll('/me/transitiveMemberOf?$select=id,displayName&$top=100');
   for (const group of groups) {
     if (!group.id) continue;
     try {
