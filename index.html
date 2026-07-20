@@ -683,25 +683,41 @@ async function graphGetAll(path) {
 // FIND THE "TO Tasks" PLAN
 // ============================================================
 async function findPlan() {
+  const debugErrors = [];
+  let allTitlesSeen = [];
+
   // Try /me/planner/plans first (plans the signed-in user is a member of)
   try {
     const plans = await graphGetAll('/me/planner/plans');
+    allTitlesSeen = allTitlesSeen.concat(plans.map(p => p.title));
     const match = plans.find(p => p.title === CONFIG.planName);
     if (match) return match.id;
-  } catch(e) { /* fall through */ }
+  } catch(e) { debugErrors.push(`/me/planner/plans: ${e.message}`); }
 
   // Fallback: search through joined groups (transitive — includes nested group memberships)
-  const groups = await graphGetAll('/me/transitiveMemberOf?$select=id,displayName&$top=100');
-  for (const group of groups) {
-    if (!group.id) continue;
-    try {
-      const plans = await graphGetAll(`/groups/${group.id}/planner/plans`);
-      const match = plans.find(p => p.title === CONFIG.planName);
-      if (match) return match.id;
-    } catch(e) { /* group may not have Planner */ }
-  }
+  try {
+    const groups = await graphGetAll('/me/transitiveMemberOf?$select=id,displayName&$top=100');
+    for (const group of groups) {
+      if (!group.id) continue;
+      try {
+        const plans = await graphGetAll(`/groups/${group.id}/planner/plans`);
+        allTitlesSeen = allTitlesSeen.concat(plans.map(p => p.title));
+        const match = plans.find(p => p.title === CONFIG.planName);
+        if (match) return match.id;
+      } catch(e) { /* this group may not have Planner enabled - not an error */ }
+    }
+  } catch(e) { debugErrors.push(`/me/transitiveMemberOf: ${e.message}`); }
 
-  throw new Error(`Could not find a plan named "${CONFIG.planName}". Make sure you're signed in with an account that has access to this Planner plan.`);
+  // Build a detailed error so the real cause is visible instead of a generic message
+  let msg = `Could not find a plan named "${CONFIG.planName}".`;
+  if (debugErrors.length) {
+    msg += ` API errors encountered: ${debugErrors.join(' | ')}`;
+  } else if (allTitlesSeen.length) {
+    msg += ` Plans that WERE found for this account: ${[...new Set(allTitlesSeen)].join(', ')}`;
+  } else {
+    msg += ` No Planner plans at all were visible to this account — likely signed in with the wrong Microsoft 365 account, or admin consent for Group.Read.All/Tasks.Read has not been granted.`;
+  }
+  throw new Error(msg);
 }
 
 // ============================================================
