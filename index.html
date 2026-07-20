@@ -570,6 +570,9 @@ const CONFIG = {
   tenantId:  'd8f88823-0039-4089-a3b1-5b76a6ab42aa',
   clientId:  '13644d21-1490-40cf-bae2-b37d32531682',
   planName:  'TO Tasks',
+  planId:    'bQo3xRLpW0Coe0ynMbU0g2UACpcr', // hardcoded: this plan lives in a private/restricted-membership
+                                              // Teams group and is not reliably discoverable via group enumeration,
+                                              // so we read it directly by ID instead of searching for it by name.
 };
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';
@@ -683,11 +686,25 @@ async function graphGetAll(path) {
 // FIND THE "TO Tasks" PLAN
 // ============================================================
 async function findPlan() {
+  // Preferred path: read the plan directly by its known ID. This works regardless
+  // of group membership visibility restrictions (e.g. private Teams channels),
+  // since it only requires Tasks.Read on the plan itself, not group enumeration.
+  if (CONFIG.planId) {
+    try {
+      const plan = await graphGet(`/planner/plans/${CONFIG.planId}`);
+      if (plan && plan.id) return plan.id;
+    } catch(e) {
+      console.warn('Direct plan-ID lookup failed, falling back to name search:', e.message);
+    }
+  }
+
   // Case-insensitive, whitespace-tolerant comparison — plan titles can render
   // differently (e.g. all-caps styling) than their actual stored value.
   const normalizeTitle = (s) => (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
   const debugErrors = [];
   let allTitlesSeen = [];
+  let groupNamesSeen = [];
+  let groupErrors = [];
 
   // Try /me/planner/plans first (plans the signed-in user is a member of)
   try {
@@ -700,6 +717,7 @@ async function findPlan() {
   // Fallback: search through joined groups (transitive — includes nested group memberships)
   try {
     const groups = await graphGetAll('/me/transitiveMemberOf?$select=id,displayName&$top=100');
+    groupNamesSeen = groups.map(g => g.displayName || g.id);
     for (const group of groups) {
       if (!group.id) continue;
       try {
@@ -707,7 +725,10 @@ async function findPlan() {
         allTitlesSeen = allTitlesSeen.concat(plans.map(p => p.title));
         const match = plans.find(p => normalizeTitle(p.title) === normalizeTitle(CONFIG.planName));
         if (match) return match.id;
-      } catch(e) { /* this group may not have Planner enabled - not an error */ }
+      } catch(e) {
+        // Record real errors (permissions, etc.) instead of silently swallowing them
+        groupErrors.push(`${group.displayName || group.id}: ${e.message}`);
+      }
     }
   } catch(e) { debugErrors.push(`/me/transitiveMemberOf: ${e.message}`); }
 
@@ -716,7 +737,9 @@ async function findPlan() {
   if (debugErrors.length) {
     msg += ` API errors encountered: ${debugErrors.join(' | ')}`;
   } else if (allTitlesSeen.length) {
-    msg += ` Plans that WERE found for this account: ${[...new Set(allTitlesSeen)].join(', ')}`;
+    msg += ` Plans that WERE found for this account: ${[...new Set(allTitlesSeen)].join(', ')}.`;
+    msg += ` Groups checked (${groupNamesSeen.length}): ${groupNamesSeen.join(', ')}.`;
+    if (groupErrors.length) msg += ` Group-level errors: ${groupErrors.join(' | ')}.`;
   } else {
     msg += ` No Planner plans at all were visible to this account — likely signed in with the wrong Microsoft 365 account, or admin consent for Group.Read.All/Tasks.Read has not been granted.`;
   }
